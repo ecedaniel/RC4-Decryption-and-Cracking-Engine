@@ -1,0 +1,27 @@
+module ksa (
+	   input CLOCK_50,
+	   input KEY[3:0],
+	   input SW[9:0],
+	   output LEDR[9:0],
+	   output HEX0[6:0],
+	   output HEX1[6:0],
+	   output HEX2[6:0],
+	   output HEX3[6:0],
+	   output HEX4[6:0],
+	   output HEX5[6:0]
+);
+
+	wire clk;
+	wire reset_n;
+
+	assign clk = CLOCK_50;
+	assign reset_n = KEY[3];
+
+	SevenSegmentDisplayDecoder SevenSegmentDisplayDecoder(
+	.ssOut(HEX0[6:0])
+	.nIn(KEY[3:0])
+);
+
+endmodule
+
+

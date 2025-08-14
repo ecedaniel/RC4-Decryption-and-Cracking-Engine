@@ -1,0 +1,160 @@
+// Key_Schedule.sv - Module for RC4 Key Scheduling Algorithm (Task 2a)
+// This module implements the key scheduling shuffle algorithm:
+// j = 0
+// for i = 0 to 255 {
+//     j = (j + s[i] + secret_key[i mod keylength]) mod 256
+//     swap values of s[i] and s[j]
+// }
+// Uses start/finish protocol and interfaces with Memory_Interface for memory operations
+
+module Key_Schedule (
+    input logic clk,
+    input logic nreset,
+    input logic start,              // Start key scheduling signal
+    output logic finish,            // Finish signal when key scheduling complete
+    output logic busy,              // Busy signal when key scheduling is in progress
+    input logic [23:0] secret_key,  // 24-bit secret key
+    
+    // Memory Interface connections for reading
+    output logic mi_rd_start,
+    output logic [7:0] mi_rd_addr,
+    input logic [7:0] mi_rd_data,
+    input logic mi_rd_done,
+    
+    // Memory Interface connections for writing
+    output logic mi_wr_start,
+    output logic [7:0] mi_wr_addr,
+    output logic [7:0] mi_wr_data,
+    input logic mi_wr_done
+);
+
+    // State parameters with encoded output flags
+    parameter IDLE        = 8'b0000_0000;  // No flags active
+    parameter READ_SI     = 8'b0001_0001;  // Reading s[i], busy flag active (bit 0)
+    parameter WAIT_SI     = 8'b0010_0001;  // Waiting for s[i] read, busy active
+    parameter READ_SJ     = 8'b0100_0001;  // Reading s[j], busy active
+    parameter WAIT_SJ     = 8'b1000_0001;  // Waiting for s[j] read, busy active
+    parameter WRITE_SJ_TO_I = 8'b0001_0001;  // Writing s[j] to address i, busy active
+    parameter WAIT_WR_I   = 8'b0010_0001;  // Waiting for write i complete, busy active
+    parameter WRITE_SI_TO_J = 8'b0100_0001;  // Writing s[i] to address j, busy active
+    parameter WAIT_WR_J   = 8'b1000_0001;  // Waiting for write j complete, busy active
+    parameter COMPLETE    = 8'b0000_0010;  // Complete - finish flag active (bit 1)
+
+    // Internal signals
+    logic [7:0] i_counter;
+    logic [7:0] j_accumulator;
+    logic [7:0] s_i_value;         
+    logic [7:0] key_byte;           
+    logic [7:0] state;
+
+    assign busy = state[0];
+    assign finish = state[1]; 
+
+    // Key byte selection for i_counter % 3 (keylength = 3)
+    Key_Byte_Selector Key_Selector (
+        .secret_key(secret_key),
+        .index(i_counter),
+        .key_byte(key_byte)
+    );
+
+    // Main FSM for Key Scheduling Algorithm
+    always_ff @(posedge clk) begin
+        if (~nreset) begin
+            state <= IDLE;
+            i_counter <= 8'd0;
+            j_accumulator <= 8'd0;
+            s_i_value <= 8'd0;
+            mi_rd_start <= 1'b0;
+            mi_rd_addr <= 8'd0;
+            mi_wr_start <= 1'b0;
+            mi_wr_addr <= 8'd0;
+            mi_wr_data <= 8'd0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (start) begin
+                        i_counter <= 8'd0;
+                        j_accumulator <= 8'd0;
+                        state <= READ_SI;
+                        mi_rd_addr <= 8'd0;
+                        mi_rd_start <= 1'b1;
+                    end else begin
+                        state <= IDLE;
+                    end
+                end
+                
+                READ_SI: begin
+                    mi_rd_start <= 1'b0;
+                    state <= WAIT_SI;
+                end
+                
+                WAIT_SI: begin
+                    if (mi_rd_done) begin
+                        s_i_value <= mi_rd_data;  // Store s[i]
+                        // Calculate j = (j + s[i] + key_byte) mod 256
+                        // Use explicit casting to avoid truncation warning
+                        j_accumulator <= 8'b((j_accumulator + mi_rd_data + key_byte) % 256);
+                        state <= READ_SJ;
+                        mi_rd_start <= 1'b1;
+                    end
+                end
+                
+                READ_SJ: begin
+                    mi_rd_start <= 1'b0;
+                    mi_rd_addr <= j_accumulator;
+                    state <= WAIT_SJ;
+                end
+                
+                WAIT_SJ: begin
+                    if (mi_rd_done) begin
+                        state <= WRITE_SJ_TO_I;
+                        mi_wr_addr <= i_counter;
+                        mi_wr_data <= mi_rd_data;
+                        mi_wr_start <= 1'b1;
+                    end
+                end
+                
+                WRITE_SJ_TO_I: begin
+                    mi_wr_start <= 1'b0;
+                    state <= WAIT_WR_I;
+                end
+                
+                WAIT_WR_I: begin
+                    if (mi_wr_done) begin
+                        state <= WRITE_SI_TO_J;
+                        mi_wr_addr <= j_accumulator;
+                        mi_wr_data <= s_i_value;
+                        mi_wr_start <= 1'b1;
+                    end
+                end
+                
+                WRITE_SI_TO_J: begin
+                    mi_wr_start <= 1'b0;
+                    state <= WAIT_WR_J;
+                end
+                
+                WAIT_WR_J: begin
+                    if (mi_wr_done) begin
+                        if (i_counter >= 8'd255) begin
+                            state <= COMPLETE;
+                        end else begin
+                            i_counter <= i_counter + 8'd1;
+                            state <= READ_SI;
+                            mi_rd_addr <= i_counter + 8'd1;
+                            mi_rd_start <= 1'b1;
+                        end
+                    end
+                end
+                
+                COMPLETE: begin
+                    state <= COMPLETE;
+                end
+                
+                default: begin
+                    state <= IDLE;
+                end
+            endcase
+        end
+    end
+
+endmodule 

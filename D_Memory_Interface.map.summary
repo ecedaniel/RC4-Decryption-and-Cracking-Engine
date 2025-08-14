@@ -1,0 +1,15 @@
+Analysis & Synthesis Status : Successful - Mon Jun 16 07:41:04 2025
+Quartus II Version : 9.0 Build 235 06/17/2009 SP 2 SJ Web Edition
+Revision Name : D_Memory_Interface
+Top-level Entity Name : D_Memory_Interface
+Family : Stratix II
+Logic utilization : N/A
+    Combinational ALUTs : 5
+    Dedicated logic registers : 17
+Total registers : 17
+Total pins : 31
+Total virtual pins : 0
+Total block memory bits : 0
+DSP block 9-bit elements : 0
+Total PLLs : 0
+Total DLLs : 0

@@ -1,0 +1,301 @@
+// RC4_Decrypt.sv - RC4 Decryption Algorithm (Third Loop)
+// Implements: i = 0, j = 0; for k = 0 to message_length-1 
+// { i = i + 1; j = j + s[i]; swap s[i] and s[j]; f = s[(s[i] + s[j])];
+// decrypted_output[k] = f XOR encrypted_input[k] }
+
+module RC4_Decrypt (
+    input  logic        clk,
+    input  logic        nreset,
+    input  logic        start,
+    output logic        finish,
+    output logic        busy,
+    output logic        message_valid,
+    output logic        invalid_message_flag,
+    
+    // S-memory Interface - Write
+    output logic        wr_start,
+    output logic [7:0]  addr_out,
+    output logic [7:0]  wr_data_out,
+    input  logic        wr_done,
+    
+    // S-memory Interface - Read
+    output logic        rd_start,
+    input  logic        rd_done,
+    input  logic [7:0]  rd_data_in,
+    
+    // Encrypted ROM interface
+    output logic        e_rd_start,
+    output logic [4:0]  e_addr_out,
+    input  logic        e_rd_done,
+    input  logic [7:0]  e_rd_data_in,
+    
+    // Decrypted RAM interface  
+    output logic        d_wr_start,
+    output logic [4:0]  d_addr_out,
+    output logic [7:0]  d_wr_data_out,
+    input  logic        d_wr_done
+);
+
+    // states
+    parameter IDLE          = 10'b000000_0000;
+    parameter INCREMENT_I   = 10'b000001_0001;
+    parameter READ_SI       = 10'b000010_0001;
+    parameter WAIT_READ_SI  = 10'b000011_0001;
+    parameter CALC_J        = 10'b000100_0001;
+    parameter READ_SJ       = 10'b000101_0001;
+    parameter WAIT_READ_SJ  = 10'b000110_0001;
+    parameter WRITE_SI      = 10'b000111_0001;
+    parameter WAIT_WRITE_SI = 10'b001000_0001;
+    parameter WRITE_SJ      = 10'b001001_0001;
+    parameter WAIT_WRITE_SJ = 10'b001010_0001;
+    parameter READ_SF       = 10'b001011_0001;
+    parameter WAIT_READ_SF  = 10'b001100_0001;
+    parameter READ_MSG      = 10'b001101_0001;
+    parameter WAIT_READ_MSG = 10'b001110_0001;
+    parameter XOR_DECRYPT   = 10'b001111_0001;
+    parameter VALIDATE_CHAR = 10'b010000_0001;
+    parameter INVALID_MESSAGE = 10'b010001_0101;
+    parameter FINISHED_INVALID = 10'b010001_0110; // Finish with invalid message flag
+    parameter WRITE_RESULT  = 10'b010010_1001;
+    parameter WAIT_WRITE_RES= 10'b010011_0001;
+    parameter CHECK_DONE    = 10'b010100_0001;
+    parameter FINISHED      = 10'b010101_0010;
+
+    // Internal signals
+    logic [9:0] state;
+    logic [7:0] i_counter;    // RC4 i counter (1 to 256, wraps to 0)
+    logic [7:0] j_accumulator;      // RC4 j accumulator  
+    logic [4:0] k_counter;    // k counter (0 to 31)
+    logic [7:0] s_i_value;    // Temp storage for s[i]
+    logic [7:0] s_j_value;    // Temp storage for s[j]
+    logic [7:0] f_value;      // f = s[(s[i] + s[j]) mod 256]
+    logic [7:0] encode_byte;     // Temp storage for encrypted byte
+    logic [7:0] f_addr;       // f address
+
+    assign message_valid = state[3]; // 1'b1 during VALID_MESSAGE state
+    assign invalid_message_flag = state[2]; // 1'b1 during TERMINATED state
+    assign finish = state[1];  // 1'b1 during FINISHED state
+    assign busy = state[0];    // 1'b1 during all active states
+
+    // Main FSM for RC4 decryption
+    always_ff @(posedge clk) begin
+        if (~nreset) begin
+            state <= IDLE;
+            i_counter <= 8'd0;
+            j_accumulator <= 8'd0;
+            k_counter <= 5'd0;
+            s_i_value <= 8'd0;
+            s_j_value <= 8'd0;
+            f_value <= 8'd0;
+            encode_byte <= 8'd0;
+            f_addr <= 8'd0;
+            wr_start <= 1'b0;
+            rd_start <= 1'b0;
+            addr_out <= 8'd0;
+            wr_data_out <= 8'd0;
+            e_rd_start <= 1'b0;
+            e_addr_out <= 5'd0;
+            d_wr_start <= 1'b0;
+            d_addr_out <= 5'd0;
+            d_wr_data_out <= 8'd0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (start) begin
+                        // Reset all counters for fresh start
+                        i_counter <= 8'd0;
+                        j_accumulator <= 8'd0;
+                        k_counter <= 5'd0;
+                        // Reset all temporary storage values
+                        s_i_value <= 8'd0;
+                        s_j_value <= 8'd0;
+                        f_value <= 8'd0;
+                        encode_byte <= 8'd0;
+                        f_addr <= 8'd0;
+                        // Reset all interface signals for clean state
+                        addr_out <= 8'd0;
+                        wr_data_out <= 8'd0;
+                        rd_start <= 1'b0;
+                        wr_start <= 1'b0;
+                        e_rd_start <= 1'b0;
+                        e_addr_out <= 5'd0;
+                        d_wr_start <= 1'b0;
+                        d_addr_out <= 5'd0;
+                        d_wr_data_out <= 8'd0;
+                        state <= INCREMENT_I;
+                    end else begin
+                        state <= IDLE;
+                    end
+                end
+
+                INCREMENT_I: begin
+                    // i = i + 1
+                    i_counter <= i_counter + 8'd1;
+                    // Start reading s[i]
+                    addr_out <= i_counter + 8'd1;
+                    state <= READ_SI;
+                    rd_start <= 1'b1;
+                end
+
+                READ_SI: begin
+                    rd_start <= 1'b0;
+                    state <= WAIT_READ_SI;
+                end
+
+                WAIT_READ_SI: begin
+                    if (rd_done) begin
+                        // Capture s[i] value
+                        s_i_value <= rd_data_in;
+                        state <= CALC_J;
+                    end
+                end
+
+                CALC_J: begin
+                    // j = j + s[i]
+                    j_accumulator <= j_accumulator + rd_data_in;
+                    addr_out <= j_accumulator + rd_data_in;
+                    // Start reading s[j]
+                    rd_start <= 1'b1;
+                    state <= READ_SJ;
+                end
+
+                READ_SJ: begin
+                    rd_start <= 1'b0;
+                    state <= WAIT_READ_SJ;
+                end
+
+                WAIT_READ_SJ: begin
+                    if (rd_done) begin
+                        // Capture s[j] value
+                        s_j_value <= rd_data_in;
+                        // Write s[j] value to address i
+                        addr_out <= i_counter;
+                        wr_data_out <= rd_data_in;  // s[j] value
+                        wr_start <= 1'b1;
+                        state <= WRITE_SI;
+                    end
+                end
+
+                WRITE_SI: begin
+                    wr_start <= 1'b0;
+                    state <= WAIT_WRITE_SI;
+                end
+
+                WAIT_WRITE_SI: begin
+                    if (wr_done) begin
+                        // Write s[i] value to address j
+                        addr_out <= j_accumulator;
+                        wr_data_out <= s_i_value;
+                        wr_start <= 1'b1;
+                        state <= WRITE_SJ;
+                    end
+                end
+
+                WRITE_SJ: begin
+                    wr_start <= 1'b0;
+                    state <= WAIT_WRITE_SJ;
+                end
+
+                WAIT_WRITE_SJ: begin
+                    if (wr_done) begin
+                        // f = s[(s[i] + s[j]) mod 256]
+                        // mod is handled by autoamtically by 8 bit adder
+                        f_addr <= s_i_value + s_j_value;
+                        state <= READ_SF;
+                    end
+                end
+
+                READ_SF: begin
+                    // Start reading s[(s[i] + s[j]) mod 256]
+                    addr_out <= f_addr;
+                    rd_start <= 1'b1;
+                    state <= WAIT_READ_SF;
+                end
+
+                WAIT_READ_SF: begin
+                    rd_start <= 1'b0;
+                    if (rd_done) begin
+                        // Capture f value
+                        f_value <= rd_data_in;
+                        e_addr_out <= k_counter;
+                        // Start reading encrypted byte
+                        e_rd_start <= 1'b1;
+                        state <= READ_MSG;
+                    end
+                end
+
+                READ_MSG: begin
+                    e_rd_start <= 1'b0;
+                    state <= WAIT_READ_MSG;
+                end
+
+                WAIT_READ_MSG: begin
+                    if (e_rd_done) begin
+                        // Capture encrypted byte
+                        encode_byte <= e_rd_data_in;
+                        state <= XOR_DECRYPT;
+                    end
+                end
+
+                XOR_DECRYPT: begin
+                    // decrypted_output[k] = f XOR encrypted_input[k]
+                    d_addr_out <= k_counter;
+                    d_wr_data_out <= f_value ^ encode_byte;
+                    // Transition to character validation
+                    state <= VALIDATE_CHAR;
+                end
+
+                VALIDATE_CHAR: begin
+                    if ((d_wr_data_out >= 8'd97 && d_wr_data_out <= 8'd122)||
+                    (d_wr_data_out == 8'd32)) begin
+                        state <= WRITE_RESULT;
+                        d_wr_start <= 1'b1;
+                    end else begin
+                        state <= INVALID_MESSAGE;
+                    end
+                end
+
+                INVALID_MESSAGE: begin
+                    // Transition to finished state with invalid flag
+                    state <= FINISHED_INVALID;
+                end
+                
+                FINISHED_INVALID: begin
+                    // Return to idle - finish signal active for one cycle
+                    state <= IDLE;
+                end
+
+                WRITE_RESULT: begin
+                    d_wr_start <= 1'b0;
+                    state <= WAIT_WRITE_RES;
+                end
+
+                WAIT_WRITE_RES: begin
+                    if (d_wr_done) begin
+                        state <= CHECK_DONE;
+                    end
+                end
+
+                CHECK_DONE: begin
+                    if (k_counter == 5'd31) begin
+                        // Finished all 32 message bytes
+                        state <= FINISHED;
+                    end else begin
+                        // Move to next message byte
+                        k_counter <= k_counter + 5'd1;
+                        state <= INCREMENT_I;
+                    end
+                end
+
+                FINISHED: begin
+                    state <= IDLE;
+                end
+
+                default: begin
+                    state <= IDLE;
+                end
+            endcase
+        end
+    end
+
+endmodule 
